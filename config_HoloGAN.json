@@ -1,5 +1,5 @@
 {
-  "image_path":"./celebA",
+  "image_path":"/media/hpc2_storage/mvasil/img_align_celeba",
   "gpu":0,
   "batch_size":32,
   "max_epochs":50,
@@ -10,7 +10,7 @@
   "beta1":0.5,
   "beta2":0.999,
   "discriminator":"discriminator_IN",
-  "generator":"generator_AdaIN8",
+  "generator":"generator_AdaIN",
   "view_func":"generate_random_rotation_translation",
   "train_func":"train_HoloGAN",
   "build_func":"build_HoloGAN",

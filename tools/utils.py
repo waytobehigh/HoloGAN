@@ -41,6 +41,9 @@ def load_webp(img_path):
     im = Image.open(img_path)
     return np.asarray(im)
 
+def imresize(image, shape):
+  return np.array(Image.fromarray(image).resize(shape))
+
 
 def merge(images, size):
   h, w = images.shape[1], images.shape[2]
@@ -71,8 +74,7 @@ def center_crop(x, crop_h, crop_w,
   h, w = x.shape[:2]
   j = int(round((h - crop_h)/2.))
   i = int(round((w - crop_w)/2.))
-  return scipy.misc.imresize(
-      x[j:j+crop_h, i:i+crop_w], [resize_h, resize_w])
+  return imresize(x[j:j+crop_h, i:i+crop_w], [resize_h, resize_w])
 
 def transform(image, input_height, input_width,
               resize_height=64, resize_width=64, crop=True):
@@ -81,7 +83,7 @@ def transform(image, input_height, input_width,
       image, input_height, input_width,
       resize_height, resize_width)
   else:
-    cropped_image = scipy.misc.imresize(image, [resize_height, resize_width])
+    cropped_image = imresize(image, [resize_height, resize_width])
   if len(cropped_image.shape) != 3: #In case of binary mask with no channels:
     cropped_image = np.expand_dims(cropped_image, -1)
   return np.array(cropped_image)[:, :, :3]/127.5 - 1.
