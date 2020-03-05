@@ -38,7 +38,7 @@ def get_image(image_path, input_height, input_width,
                    resize_height, resize_width, crop)
 
 def load_webp(img_path):
-    im = Image.open(img_path)
+    im = Image.open(img_path).convert('RGB')
     return np.asarray(im)
 
 def imresize(image, shape):

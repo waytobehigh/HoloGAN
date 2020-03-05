@@ -1,8 +1,9 @@
 {
-  "image_path":"/media/hpc2_storage/mvasil/img_align_celeba",
+  "image_path":"/home/waytobehigh/data/cars_train_resized/cars_train",
   "gpu":0,
+  "refresh_rate":250,
   "batch_size":32,
-  "max_epochs":50,
+  "max_epochs":2000,
   "epoch_step":25,
   "z_dim":128,
   "d_eta":0.0001,
@@ -18,7 +19,7 @@
   "sample_z":"uniform",
   "add_D_noise":"false",
   "DStyle_lambda":1.0,
-  "lambda_latent":0.0,
+  "lambda_latent":10.0,
   "ele_low":70,
   "ele_high":110,
   "azi_low":220,
@@ -33,5 +34,5 @@
   "z_high":0,
   "with_translation":"false",
   "with_scale":"false",
-  "output_dir": "./HoloGAN"
+  "output_dir": "./results/cars1"
 }
