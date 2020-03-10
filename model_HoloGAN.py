@@ -5,6 +5,7 @@ import os
 import shutil
 import sys
 from glob import glob
+
 from tqdm import tqdm
 
 with open(sys.argv[1], 'r') as fh:
@@ -18,8 +19,22 @@ from tools.utils import get_image, merge, inverse_transform, to_bool
 from tools.rotation_utils import *
 from tools.model_utils import transform_voxel_to_match_image
 
-
 # ----------------------------------------------------------------------------
+GRID_X, GRID_Y = 8, 8
+SAMPLE_Z = np.random.uniform(-1., 1., (GRID_X, 1, cfg['z_dim'])) * np.ones((1, GRID_Y, cfg['z_dim']))
+SAMPLE_Z = SAMPLE_Z.transpose(1, 0, 2).reshape((-1, cfg['z_dim']))
+SAMPLE_VIEW = generate_random_rotation_translation(
+    GRID_X * GRID_Y,
+    cfg['ele_low'], cfg['ele_high'],
+    cfg['azi_low'], cfg['azi_high'],
+    cfg['scale_low'], cfg['scale_high'],
+    cfg['x_low'], cfg['x_high'],
+    cfg['y_low'], cfg['y_high'],
+    cfg['z_low'], cfg['z_high'],
+    with_translation=False,
+    with_scale=to_bool(str(cfg['with_translation']))
+)
+
 
 class HoloGAN(object):
     def __init__(self, sess, input_height=108, input_width=108, crop=True,
@@ -29,7 +44,8 @@ class HoloGAN(object):
                  input_fname_pattern='*.webp'):
 
         self.sess = sess
-        self.crop = crop
+        # self.crop = crop
+        self.crop = False
 
         self.input_height = input_height
         self.input_width = input_width
@@ -156,7 +172,7 @@ class HoloGAN(object):
                                        input_width=self.input_width,
                                        resize_height=self.output_height,
                                        resize_width=self.output_width,
-                                       crop=True) for sample_file in sample_files]
+                                       crop=self.crop) for sample_file in sample_files]
 
         counter = 1
         start_time = time.time()
@@ -172,9 +188,9 @@ class HoloGAN(object):
         g_lr = cfg['g_eta']
         for epoch in range(cfg['max_epochs']):
             d_lr = d_lr if epoch < cfg['epoch_step'] else d_lr * (cfg['max_epochs'] - epoch) / (
-            cfg['max_epochs'] - cfg['epoch_step'])
+                cfg['max_epochs'] - cfg['epoch_step'])
             g_lr = g_lr if epoch < cfg['epoch_step'] else g_lr * (cfg['max_epochs'] - epoch) / (
-            cfg['max_epochs'] - cfg['epoch_step'])
+                cfg['max_epochs'] - cfg['epoch_step'])
 
             random.shuffle(self.data)
             batch_idxs = min(len(self.data), config.train_size) // cfg['batch_size']
@@ -234,11 +250,12 @@ class HoloGAN(object):
                       % (epoch, idx, batch_idxs,
                          time.time() - start_time, errD_fake + errD_real, errG, errQ))
 
-                if np.mod(counter, 1000) == 1:
+                if np.mod(counter, cfg["refresh_rate"]) == 1:
                     self.save(LOGDIR, counter)
+                    # Use global vectors
                     feed_eval = {self.inputs: sample_images,
-                                 self.z: sample_z,
-                                 self.view_in: sample_view,
+                                 self.z: SAMPLE_Z,
+                                 self.view_in: SAMPLE_VIEW,
                                  self.d_lr_in: d_lr,
                                  self.g_lr_in: g_lr}
                     samples, d_loss, g_loss = self.sess.run(
@@ -246,16 +263,14 @@ class HoloGAN(object):
                         feed_dict=feed_eval)
                     ren_img = inverse_transform(samples)
                     ren_img = np.clip(255 * ren_img, 0, 255).astype(np.uint8)
-                    try:
-                        scipy.misc.imsave(
-                            os.path.join(OUTPUT_DIR, "{0}_GAN.png".format(counter)),
-                            merge(ren_img, [cfg['batch_size'] // 4, 4]))
-                        print("[Sample] d_loss: %.8f, g_loss: %.8f" % (d_loss, g_loss))
-                    except:
-                        scipy.misc.imsave(
-                            os.path.join(OUTPUT_DIR, "{0}_GAN.png".format(counter)),
-                            ren_img[0])
-                        print("[Sample] d_loss: %.8f, g_loss: %.8f" % (d_loss, g_loss))
+                    # try:
+                    Image.fromarray(merge(ren_img, [GRID_X, GRID_Y]).astype(np.uint8)).save(
+                        os.path.join(OUTPUT_DIR, "{0}_GAN.png".format(counter)))
+                    print("[Sample] d_loss: %.8f, g_loss: %.8f" % (d_loss, g_loss))
+                    # except:
+                    #     Image.fromarray(ren_img[0]).save(
+                    #         os.path.join(OUTPUT_DIR, "{0}_GAN.png".format(counter)))
+                    #     print("[Sample] d_loss: %.8f, g_loss: %.8f" % (d_loss, g_loss))
 
     def sample_HoloGAN(self, config):
         could_load, checkpoint_counter = self.load(self.checkpoint_dir)
@@ -268,7 +283,8 @@ class HoloGAN(object):
         SAMPLE_DIR = os.path.join(OUTPUT_DIR, "samples")
         if not os.path.exists(SAMPLE_DIR):
             os.makedirs(SAMPLE_DIR)
-        sample_z = self.sampling_Z(cfg['z_dim'], str(cfg['sample_z']))
+
+        # sample_z = self.sampling_Z(cfg['z_dim'], str(cfg['sample_z']))
         if config.rotate_azimuth:
             low = cfg['azi_low']
             high = cfg['azi_high']
@@ -286,7 +302,7 @@ class HoloGAN(object):
             if config.rotate_azimuth:
                 sample_view = np.tile(
                     np.array([i * math.pi / 180.0, 0 * math.pi / 180.0, 1.0, 0, 0, 0]), (cfg['batch_size'], 1))
-            elif config.rotate_azimuth:
+            elif config.rotate_elevation:
                 sample_view = np.tile(
                     np.array([270 * math.pi / 180.0, (90 - i) * math.pi / 180.0, 1.0, 0, 0, 0]), (cfg['batch_size'], 1))
             else:
@@ -300,25 +316,27 @@ class HoloGAN(object):
                                                  with_translation=False,
                                                  with_scale=to_bool(str(cfg['with_translation'])))
 
-            feed_eval = {self.z: sample_z,
-                         self.view_in: sample_view}
+            # Use global vectors
+            feed_eval = {self.z: SAMPLE_Z,
+                         self.view_in: SAMPLE_VIEW}
 
             samples = self.sess.run(self.G, feed_dict=feed_eval)
             ren_img = inverse_transform(samples)
             ren_img = np.clip(255 * ren_img, 0, 255).astype(np.uint8)
             try:
-                scipy.misc.imsave(
-                    os.path.join(SAMPLE_DIR, "{0}_samples_{1}.png".format(counter, i)),
-                    merge(ren_img, [cfg['batch_size'] // 4, 4]))
+                Image.fromarray(merge(ren_img, [GRID_X, GRID_Y]).astype(np.uint8)).save(
+                    os.path.join(SAMPLE_DIR, "{0}_samples_{1}.png".format(counter, i))
+                )
             except:
-                scipy.misc.imsave(
-                    os.path.join(SAMPLE_DIR, "{0}_samples_{1}.png".format(counter, i)),
-                    ren_img[0])
+                Image.fromarray(ren_img[0]).save(
+                    os.path.join(SAMPLE_DIR, "{0}_samples_{1}.png".format(counter, i))
+                )
 
                 # =======================================================================================================================
 
     def sampling_Z(self, z_dim, type="uniform"):
         if str.lower(type) == "uniform":
+            np.random.seed()
             return np.random.uniform(-1., 1., (cfg['batch_size'], z_dim))
         else:
             return np.random.normal(0, 1, (cfg['batch_size'], z_dim))
@@ -389,6 +407,7 @@ class HoloGAN(object):
             h2, h2_mean, h2_var = instance_norm(h2, 'd_in2', True)
             h2_mean = tf.reshape(h2_mean, (batch_size, self.df_dim * 4))
             h2_var = tf.reshape(h2_var, (batch_size, self.df_dim * 4))
+
             d_h2_style = tf.concat([h2_mean, h2_var], 0)
             d_h2, d_h2_logits = self.linear_classifier(d_h2_style, "d_h2_class")
             h2 = lrelu(h2)

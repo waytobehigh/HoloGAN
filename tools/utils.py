@@ -9,7 +9,6 @@ import io
 from PIL import Image
 import random
 import pprint
-import scipy.misc
 import numpy as np
 
 from tools.rotation_utils import *
@@ -20,7 +19,6 @@ import tensorflow.contrib.slim as slim
 import glob
 import os
 import random
-import scipy.misc
 
 pp = pprint.PrettyPrinter()
 
@@ -38,7 +36,7 @@ def get_image(image_path, input_height, input_width,
                    resize_height, resize_width, crop)
 
 def load_webp(img_path):
-    im = Image.open(img_path)
+    im = Image.open(img_path).convert('RGB')
     return np.asarray(im)
 
 def imresize(image, shape):
