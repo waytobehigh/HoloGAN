@@ -4,6 +4,9 @@ import json
 import os
 import shutil
 import sys
+import torch
+import models
+from torchvision import transforms
 from glob import glob
 
 from tqdm import tqdm
@@ -14,15 +17,18 @@ IMAGE_PATH = cfg['image_path']
 OUTPUT_DIR = cfg['output_dir']
 LOGDIR = os.path.join(OUTPUT_DIR, "log")
 
+cfg['z_dim'] += cfg['emb_dim']
+
 from tools.ops import *
 from tools.utils import get_image, merge, inverse_transform, to_bool
 from tools.rotation_utils import *
 from tools.model_utils import transform_voxel_to_match_image
 
+from warnings import filterwarnings
+filterwarnings('ignore')
+
 # ----------------------------------------------------------------------------
 GRID_X, GRID_Y = 8, 8
-SAMPLE_Z = np.random.uniform(-1., 1., (GRID_X, 1, cfg['z_dim'])) * np.ones((1, GRID_Y, cfg['z_dim']))
-SAMPLE_Z = SAMPLE_Z.transpose(1, 0, 2).reshape((-1, cfg['z_dim']))
 SAMPLE_VIEW = generate_random_rotation_translation(
     GRID_X * GRID_Y,
     cfg['ele_low'], cfg['ele_high'],
@@ -44,8 +50,7 @@ class HoloGAN(object):
                  input_fname_pattern='*.webp'):
 
         self.sess = sess
-        # self.crop = crop
-        self.crop = False
+        self.crop = crop
 
         self.input_height = input_height
         self.input_width = input_width
@@ -60,6 +65,42 @@ class HoloGAN(object):
         self.input_fname_pattern = input_fname_pattern
         self.data = glob.glob(os.path.join(IMAGE_PATH, self.input_fname_pattern))
         self.checkpoint_dir = LOGDIR
+
+        checkpoint = torch.load(cfg['emb_checkpoint'])
+        self.embedder = checkpoint['model'].module
+        self.emb_transforms = transforms.Compose([
+            transforms.CenterCrop((self.input_height, self.input_width)),
+            transforms.Resize((cfg['emb_input_size'], cfg['emb_input_size']), Image.BICUBIC),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+        ])
+
+        global SAMPLE_Z
+        SAMPLE_Z = np.random.uniform(-1., 1., (GRID_X, 1, cfg['z_dim'] - cfg['emb_dim']))
+
+        emb_test = glob.glob(os.path.join(cfg['emb_test'], self.input_fname_pattern))
+        batch_emb = torch.stack([self.emb_transforms(Image.open(file).convert('RGB')) for file in emb_test])
+        batch_emb = self.embedder(batch_emb.to(torch.float32).cuda()).cpu().detach()
+        batch_emb = batch_emb.unsqueeze(1).numpy()
+        SAMPLE_Z = np.concatenate((SAMPLE_Z, batch_emb), axis=-1)
+
+        SAMPLE_Z = SAMPLE_Z * np.ones((1, GRID_Y, cfg['z_dim']))
+        SAMPLE_Z = SAMPLE_Z.transpose(1, 0, 2).reshape((-1, cfg['z_dim']))
+
+        self.images = []
+        for i, image in enumerate([transforms.Compose([
+            transforms.CenterCrop((self.input_height, self.input_width)),
+            transforms.Resize((self.output_height, self.output_width)),
+        ])(Image.open(file).convert('RGB')) for file in emb_test]):
+            # image = inverse_transform(image)
+            # image = np.clip(255 * image, 0, 255).astype(np.uint8)
+            # Image.fromarray(inverse_transform(image).astype(np.uint8))\
+            self.images.append(np.array(image).astype(np.uint8))
+            # image.save(
+            #     os.path.join(OUTPUT_DIR, "{0}_ASD.png".format(i)))
+        self.images = np.stack(self.images)
+
+
 
     def build(self, build_func_name):
         build_func = eval("self." + build_func_name)
@@ -147,7 +188,7 @@ class HoloGAN(object):
         self.writer = SummaryWriter(LOGDIR, self.sess.graph)
 
         # Sample noise Z and view parameters to test during training
-        sample_z = self.sampling_Z(cfg['z_dim'], str(cfg['sample_z']))
+        sample_z = self.sampling_Z(cfg['z_dim'] - cfg['emb_dim'], str(cfg['sample_z']))
         sample_view = self.gen_view_func(cfg['batch_size'],
                                          cfg['ele_low'], cfg['ele_high'],
                                          cfg['azi_low'], cfg['azi_high'],
@@ -212,7 +253,11 @@ class HoloGAN(object):
                                               resize_width=self.output_width,
                                               crop=self.crop) for batch_file in batch_files]
 
-                batch_z = self.sampling_Z(cfg['z_dim'], str(cfg['sample_z']))
+                batch_z = self.sampling_Z(cfg['z_dim'] - cfg['emb_dim'], str(cfg['sample_z']))
+                batch_emb = torch.stack([self.emb_transforms(Image.open(file).convert('RGB')) for file in batch_files])
+                batch_emb = self.embedder(batch_emb.to(torch.float32).cuda()).cpu().detach().numpy()
+                batch_z = np.hstack((batch_z, batch_emb))
+
                 batch_view = self.gen_view_func(cfg['batch_size'],
                                                 cfg['ele_low'], cfg['ele_high'],
                                                 cfg['azi_low'], cfg['azi_high'],
@@ -263,8 +308,9 @@ class HoloGAN(object):
                         feed_dict=feed_eval)
                     ren_img = inverse_transform(samples)
                     ren_img = np.clip(255 * ren_img, 0, 255).astype(np.uint8)
+                    ren_img = np.concatenate([self.images, ren_img], axis=0)
                     # try:
-                    Image.fromarray(merge(ren_img, [GRID_X, GRID_Y]).astype(np.uint8)).save(
+                    Image.fromarray(merge(ren_img, [GRID_X + 1, GRID_Y]).astype(np.uint8)).save(
                         os.path.join(OUTPUT_DIR, "{0}_GAN.png".format(counter)))
                     print("[Sample] d_loss: %.8f, g_loss: %.8f" % (d_loss, g_loss))
                     # except:
