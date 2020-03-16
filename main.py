@@ -12,7 +12,7 @@ LOGDIR = os.path.join(OUTPUT_DIR, "log")
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "{0}".format(cfg['gpu'])
 from model_HoloGAN import HoloGAN
-from tools.utils import pp, show_all_variables
+from tools.utils import pp, show_all_variables, load_pb
 
 
 flags = tf.app.flags
@@ -42,10 +42,12 @@ def main(_):
 
   run_config = tf.ConfigProto()
   run_config.gpu_options.allow_growth=True
+  emb_graph = load_pb(cfg['emb_tf_model'])
   print("FLAGs " + str(FLAGS.dataset))
-  with tf.Session(config=run_config) as sess:
+  with tf.Session(config=run_config, graph=emb_graph) as sess:
     model = HoloGAN(
         sess,
+        emb_graph,
         input_width=FLAGS.input_width,
         input_height=FLAGS.input_height,
         output_width=FLAGS.output_width,
