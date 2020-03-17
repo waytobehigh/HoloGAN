@@ -5,11 +5,10 @@ import os
 import shutil
 import sys
 import torch
-import models
+import numpy as np
 from torchvision import transforms
 from glob import glob
 from tensorflow.contrib import graph_editor as ge
-from math import ceil
 
 from tqdm import tqdm
 
@@ -31,17 +30,23 @@ filterwarnings('ignore')
 
 # ----------------------------------------------------------------------------
 GRID_X, GRID_Y = 4, 8
-SAMPLE_VIEW = generate_random_rotation_translation(
-    GRID_X * GRID_Y,
-    cfg['ele_low'], cfg['ele_high'],
-    cfg['azi_low'], cfg['azi_high'],
-    cfg['scale_low'], cfg['scale_high'],
-    cfg['x_low'], cfg['x_high'],
-    cfg['y_low'], cfg['y_high'],
-    cfg['z_low'], cfg['z_high'],
-    with_translation=False,
-    with_scale=to_bool(str(cfg['with_translation']))
-)
+SAMPLE_VIEW = np.tile(np.concatenate([
+    generate_random_rotation_translation(
+        1,
+        cfg['ele_low'], cfg['ele_high'],
+        angle, angle + 1,
+        cfg['scale_low'], cfg['scale_high'],
+        cfg['x_low'], cfg['x_high'],
+        cfg['y_low'], cfg['y_high'],
+        cfg['z_low'], cfg['z_high'],
+        with_translation=False,
+        with_scale=to_bool(str(cfg['with_translation']))
+    )
+for angle in np.linspace(cfg['azi_low'], cfg['azi_high'], GRID_X)]), [GRID_Y, 1])
+SAMPLE_VIEW = SAMPLE_VIEW.reshape((GRID_Y, GRID_X, -1)).transpose((1, 0, 2)).reshape((GRID_X * GRID_Y, -1))
+assert SAMPLE_VIEW.shape == (32, 6)
+# print(SAMPLE_VIEW[:, 0])
+# exit(0)
 
 
 class HoloGAN(object):
@@ -91,18 +96,18 @@ class HoloGAN(object):
         self.sess_emb = tf.Session(config=run_config, graph=self.emb_graph)
 
         global SAMPLE_Z
-        SAMPLE_Z = np.random.uniform(-1., 1., (GRID_Y, 1, cfg['z_dim'] - cfg['emb_dim']))
+        SAMPLE_Z = np.random.uniform(-1., 1., (1, GRID_Y, cfg['z_dim'] - cfg['emb_dim']))
         # SAMPLE_Z = np.random.uniform(-1., 1., (GRID_X, 1, cfg['z_dim']))
 
         emb_test = glob.glob(os.path.join(cfg['emb_test'], self.input_fname_pattern))
 
         batch_emb = torch.stack([self.emb_transforms(Image.open(file).convert('RGB')) for file in emb_test]).numpy()
         batch_emb = self.sess_emb.run(self.emb_output, {self.emb_input: np.tile(batch_emb, (4, 1, 1, 1))})[:8]
-        batch_emb = np.expand_dims(batch_emb, 1)
+        batch_emb = np.expand_dims(batch_emb, 0)
         SAMPLE_Z = np.concatenate((SAMPLE_Z, batch_emb), axis=-1)
 
-        SAMPLE_Z = SAMPLE_Z * np.ones((1, GRID_X, cfg['z_dim']))
-        SAMPLE_Z = SAMPLE_Z.transpose(1, 0, 2).reshape((-1, cfg['z_dim']))
+        SAMPLE_Z = SAMPLE_Z * np.ones((GRID_X, 1, cfg['z_dim']))
+        SAMPLE_Z = SAMPLE_Z.reshape((-1, cfg['z_dim']))
 
         self.images = []
         for i, image in enumerate([transforms.Compose([
@@ -302,6 +307,12 @@ class HoloGAN(object):
                                                 cfg['z_low'], cfg['z_high'],
                                                 with_translation=False,
                                                 with_scale=to_bool(str(cfg['with_translation'])))
+
+                # control_weight = [
+                #     op for op in tf.get_default_graph().get_operations()
+                #     if op.name == 'layer3.20.conv1.weight']
+                # control_weight = control_weight[0].values()[0].eval(session=self.sess)
+                # print(np.mean(control_weight), np.std(control_weight))
 
                 feed = {self.inputs: batch_images,
                         self.z: batch_z,
