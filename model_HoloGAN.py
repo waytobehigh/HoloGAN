@@ -10,16 +10,19 @@ import tensorflow as tf
 from torchvision import transforms
 from glob import glob
 from tensorflow.contrib import graph_editor as ge
-
 from tqdm import tqdm
-cfg = importlib.import_module(sys.argv[1])
-# from configs import config as cfg
+
+DEPLOY = True
+if DEPLOY:
+    from runpy import run_path
+    from argparse import Namespace
+    cfg = Namespace(**run_path(sys.argv[1]))
+else:
+    from configs import config as cfg
 
 IMAGE_PATH = cfg.image_path
 OUTPUT_DIR = cfg.output_dir
-LOGDIR = os.path.join(OUTPUT_DIR, "log")
-
-cfg.z_dim += cfg.emb_dim
+LOGDIR = cfg.checkpoint_dir
 
 from tools.ops import *
 from tools.utils import get_image, merge, inverse_transform, to_bool
@@ -30,7 +33,7 @@ from warnings import filterwarnings
 filterwarnings('ignore')
 
 # ----------------------------------------------------------------------------
-GRID_X, GRID_Y = 4, 8
+GRID_X, GRID_Y = 8, 8
 SAMPLE_VIEW = np.tile(np.concatenate([
     generate_random_rotation_translation(
         1,
@@ -45,8 +48,11 @@ SAMPLE_VIEW = np.tile(np.concatenate([
     )
 for angle in np.linspace(cfg.azi_low, cfg.azi_high, GRID_X)]), [GRID_Y, 1])
 SAMPLE_VIEW = SAMPLE_VIEW.reshape((GRID_Y, GRID_X, -1)).transpose((1, 0, 2)).reshape((GRID_X * GRID_Y, -1))
-assert SAMPLE_VIEW.shape == (32, 6)
+assert SAMPLE_VIEW.shape == (GRID_X * GRID_Y, 6)
 
+ADD_EMBEDDING = False
+if ADD_EMBEDDING:
+    cfg.z_dim += cfg.emb_dim
 
 class HoloGAN(object):
     def __init__(self, sess, emb_graph, input_height=108, input_width=108, crop=True,
@@ -88,38 +94,44 @@ class HoloGAN(object):
         #     self.emb_output = tf.import_graph_def(g_def, input_map={"emb_input:0": self.emb_input}, return_elements=['emb_output:0'])
         #     print(g.get_tensor_by_name('emb_input:0'))
         #     print(tf_graph.get_tensor_by_name('emb_input:0'))
-        self.emb_input = self.emb_graph.get_tensor_by_name('emb_input:0')
-        self.emb_output = self.emb_graph.get_tensor_by_name('emb_output:0')
-        run_config = tf.ConfigProto()
-        run_config.gpu_options.allow_growth = True
-        self.sess_emb = tf.Session(config=run_config, graph=self.emb_graph)
+        if ADD_EMBEDDING:
+            self.emb_input = self.emb_graph.get_tensor_by_name('emb_input:0')
+            self.emb_output = self.emb_graph.get_tensor_by_name('emb_output:0')
+            run_config = tf.ConfigProto()
+            run_config.gpu_options.allow_growth = True
+            self.sess_emb = tf.Session(config=run_config, graph=self.emb_graph)
 
         global SAMPLE_Z
-        SAMPLE_Z = np.random.uniform(-1., 1., (1, GRID_Y, cfg.z_dim - cfg.emb_dim))
+        if ADD_EMBEDDING:
+            SAMPLE_Z = np.random.uniform(-1., 1., (1, GRID_Y, cfg.z_dim - cfg.emb_dim))
+        else:
+            SAMPLE_Z = np.random.uniform(-1., 1., (1, GRID_Y, cfg.z_dim))
         # SAMPLE_Z = np.random.uniform(-1., 1., (GRID_X, 1, cfg.z_dim))
 
-        emb_test = glob.glob(os.path.join(cfg.emb_test, self.input_fname_pattern))
+        if ADD_EMBEDDING:
+            emb_test = glob.glob(os.path.join(cfg.emb_test, self.input_fname_pattern))
 
-        batch_emb = torch.stack([self.emb_transforms(Image.open(file).convert('RGB')) for file in emb_test]).numpy()
-        batch_emb = self.sess_emb.run(self.emb_output, {self.emb_input: np.tile(batch_emb, (4, 1, 1, 1))})[:8]
-        batch_emb = np.expand_dims(batch_emb, 0)
-        SAMPLE_Z = np.concatenate((SAMPLE_Z, batch_emb), axis=-1)
+            batch_emb = torch.stack([self.emb_transforms(Image.open(file).convert('RGB')) for file in emb_test]).numpy()
+            batch_emb = self.sess_emb.run(self.emb_output, {self.emb_input: np.tile(batch_emb, (4, 1, 1, 1))})[:8]
+            batch_emb = np.expand_dims(batch_emb, 0)
+            SAMPLE_Z = np.concatenate((SAMPLE_Z, batch_emb), axis=-1)
 
         SAMPLE_Z = SAMPLE_Z * np.ones((GRID_X, 1, cfg.z_dim))
         SAMPLE_Z = SAMPLE_Z.reshape((-1, cfg.z_dim))
 
-        self.images = []
-        for i, image in enumerate([transforms.Compose([
-            transforms.CenterCrop((self.input_height, self.input_width)),
-            transforms.Resize((self.output_height, self.output_width)),
-        ])(Image.open(file).convert('RGB')) for file in emb_test]):
-            # image = inverse_transform(image)
-            # image = np.clip(255 * image, 0, 255).astype(np.uint8)
-            # Image.fromarray(inverse_transform(image).astype(np.uint8))\
-            self.images.append(np.array(image).astype(np.uint8))
-            # image.save(
-            #     os.path.join(OUTPUT_DIR, "{0}_ASD.png".format(i)))
-        self.images = np.stack(self.images)
+        if ADD_EMBEDDING:
+            self.images = []
+            for i, image in enumerate([transforms.Compose([
+                transforms.CenterCrop((self.input_height, self.input_width)),
+                transforms.Resize((self.output_height, self.output_width)),
+            ])(Image.open(file).convert('RGB')) for file in emb_test]):
+                # image = inverse_transform(image)
+                # image = np.clip(255 * image, 0, 255).astype(np.uint8)
+                # Image.fromarray(inverse_transform(image).astype(np.uint8))\
+                self.images.append(np.array(image).astype(np.uint8))
+                # image.save(
+                #     os.path.join(OUTPUT_DIR, "{0}_ASD.png".format(i)))
+            self.images = np.stack(self.images)
 
 
     def build(self, build_func_name):
@@ -141,10 +153,8 @@ class HoloGAN(object):
 
         if str.lower(str(cfg.style_disc)) == "true":
             print("Style Disc")
-            self.D, self.D_logits, _, self.d_h1_r, self.d_h2_r, self.d_h3_r, self.d_h4_r = dis_func(inputs,
-                                                                                                    cont_dim=cfg[
-                                                                                                        'z_dim'],
-                                                                                                    reuse=False)
+            self.D, self.D_logits, _, self.d_h1_r, self.d_h2_r, self.d_h3_r, self.d_h4_r = dis_func(
+                inputs, cont_dim=cfg.z_dim, reuse=False)
             self.D_, self.D_logits_, self.Q_c_given_x, self.d_h1_f, self.d_h2_f, self.d_h3_f, self.d_h4_f = dis_func(
                 self.G, cont_dim=cfg.z_dim, reuse=True)
 
@@ -183,12 +193,12 @@ class HoloGAN(object):
         # Emb loss
 
 
-        self.emb_reconstructed = tf.image.resize_images(self.G, [cfg.emb_input_size] * 2)
-        self.emb_reconstructed = tf.transpose(self.emb_reconstructed, [0, 3, 1, 2])
-        print(self.emb_input.shape, self.emb_reconstructed.shape)
-        self.emb_reconstructed = ge.graph_replace(self.emb_output, {self.emb_input: self.emb_reconstructed})
-        self.e_loss = cfg.lambda_emb * tf.reduce_mean(tf.square(self.emb_reconstructed - self.z[:, cfg.z_dim - cfg.emb_dim:]))
-        self.g_loss = self.g_loss + self.e_loss
+        if ADD_EMBEDDING:
+            self.emb_reconstructed = tf.image.resize_images(self.G, [cfg.emb_input_size] * 2)
+            self.emb_reconstructed = tf.transpose(self.emb_reconstructed, [0, 3, 1, 2])
+            self.emb_reconstructed = ge.graph_replace(self.emb_output, {self.emb_input: self.emb_reconstructed})
+            self.e_loss = cfg.lambda_emb * tf.reduce_mean(tf.square(self.emb_reconstructed - self.z[:, cfg.z_dim - cfg.emb_dim:]))
+            self.g_loss = self.g_loss + self.e_loss
 
         self.d_loss_real_sum = scalar_summary("d_loss_real", self.d_loss_real)
         self.d_loss_fake_sum = scalar_summary("d_loss_fake", self.d_loss_fake)
@@ -283,18 +293,22 @@ class HoloGAN(object):
                                               resize_width=self.output_width,
                                               crop=self.crop) for batch_file in batch_files]
 
-                batch_z = self.sampling_Z(cfg.z_dim - cfg.emb_dim, str(cfg.sample_z))
+                if ADD_EMBEDDING:
+                    batch_z = self.sampling_Z(cfg.z_dim - cfg.emb_dim, str(cfg.sample_z))
+                else:
+                    batch_z = self.sampling_Z(cfg.z_dim, str(cfg.sample_z))
                 # batch_z = self.sampling_Z(cfg.z_dim, str(cfg.sample_z))
                 # batch_emb = torch.stack([self.emb_transforms(Image.open(file).convert('RGB')) for file in batch_files])
                 # batch_emb = self.embedder(batch_emb.to(torch.float32).cuda()).cpu().detach().numpy()
 
-                batch_emb = [self.emb_transforms(Image.open(file).convert('RGB')) for file in batch_files]
-                if len(batch_emb) != cfg.batch_size:
-                    batch_emb = batch_emb * cfg.batch_size
-                    batch_emb = batch_emb[:cfg.batch_size]
-                batch_emb = torch.stack(batch_emb).numpy()
-                batch_emb = self.sess_emb.run(self.emb_output, {self.emb_input: batch_emb})
-                batch_z = np.hstack((batch_z, batch_emb))
+                if ADD_EMBEDDING:
+                    batch_emb = [self.emb_transforms(Image.open(file).convert('RGB')) for file in batch_files]
+                    if len(batch_emb) != cfg.batch_size:
+                        batch_emb = batch_emb * cfg.batch_size
+                        batch_emb = batch_emb[:cfg.batch_size]
+                    batch_emb = torch.stack(batch_emb).numpy()
+                    batch_emb = self.sess_emb.run(self.emb_output, {self.emb_input: batch_emb})
+                    batch_z = np.hstack((batch_z, batch_emb))
 
                 batch_view = self.gen_view_func(cfg.batch_size,
                                                 cfg.ele_low, cfg.ele_high,
@@ -333,7 +347,10 @@ class HoloGAN(object):
                 errD_real = self.d_loss_real.eval(feed)
                 errG = self.g_loss.eval(feed)
                 errQ = self.q_loss.eval(feed)
-                errE = self.e_loss.eval(feed)
+                if ADD_EMBEDDING:
+                    errE = self.e_loss.eval(feed)
+                else:
+                    errE = 0
 
                 counter += 1
                 print("Epoch: [%2d] [%4d/%4d] time: %4.4f, d_loss: %.8f, g_loss: %.8f, q_loss: %.8f, e_loss: %.8f" \
@@ -356,9 +373,12 @@ class HoloGAN(object):
                         feed_dict=feed_eval)
                     ren_img = inverse_transform(samples)
                     ren_img = np.clip(255 * ren_img, 0, 255).astype(np.uint8)
-                    ren_img = np.concatenate([self.images, ren_img], axis=0)
+                    grid_x = GRID_X
+                    if ADD_EMBEDDING:
+                        ren_img = np.concatenate([self.images, ren_img], axis=0)
+                        grid_x += 1
                     # try:
-                    Image.fromarray(merge(ren_img, [GRID_X + 1, GRID_Y]).astype(np.uint8)).save(
+                    Image.fromarray(merge(ren_img, [grid_x, GRID_Y]).astype(np.uint8)).save(
                         os.path.join(OUTPUT_DIR, "{0}_GAN.png".format(counter)))
                     print("[Sample] d_loss: %.8f, g_loss: %.8f" % (d_loss, g_loss))
                     # except:
@@ -417,14 +437,12 @@ class HoloGAN(object):
             samples = self.sess.run(self.G, feed_dict=feed_eval)
             ren_img = inverse_transform(samples)
             ren_img = np.clip(255 * ren_img, 0, 255).astype(np.uint8)
-            try:
-                Image.fromarray(merge(ren_img, [GRID_X, GRID_Y]).astype(np.uint8)).save(
-                    os.path.join(SAMPLE_DIR, "{0}_samples_{1}.png".format(counter, i))
-                )
-            except:
-                Image.fromarray(ren_img[0]).save(
-                    os.path.join(SAMPLE_DIR, "{0}_samples_{1}.png".format(counter, i))
-                )
+            grid_x = GRID_X
+            if ADD_EMBEDDING:
+                ren_img = np.concatenate([self.images, ren_img], axis=0)
+                grid_x += 1
+            Image.fromarray(merge(ren_img, [grid_x, GRID_Y]).astype(np.uint8)).save(
+                    os.path.join(SAMPLE_DIR, "{0}_samples_{1}.png".format(counter, i)))
 
                 # =======================================================================================================================
 

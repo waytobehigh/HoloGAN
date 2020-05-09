@@ -4,14 +4,19 @@ import sys
 
 import tensorflow as tf
 
-cfg = importlib.import_module(sys.argv[1])
-# from configs import config as cfg
+DEPLOY = True
+if DEPLOY:
+    from runpy import run_path
+    from argparse import Namespace
+    cfg = Namespace(**run_path(sys.argv[1]))
+else:
+    from configs import config as cfg
 
 OUTPUT_DIR = cfg.output_dir
 LOGDIR = os.path.join(OUTPUT_DIR, "log")
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "{0}".format(cfg.gpu_id)
-from model_HoloGAN import HoloGAN
+from model_HoloGAN import HoloGAN, ADD_EMBEDDING
 from tools.utils import show_all_variables, load_pb
 
 
@@ -23,7 +28,9 @@ def main(_):
 
     run_config = tf.ConfigProto()
     run_config.gpu_options.allow_growth = True
-    emb_graph = load_pb(cfg.emb_tf_model)
+    emb_graph = None
+    if ADD_EMBEDDING:
+        emb_graph = load_pb(str(cfg.emb_tf_model))
 
     with tf.Session(config=run_config, graph=emb_graph) as sess:
         model = HoloGAN(
@@ -37,12 +44,12 @@ def main(_):
             input_fname_pattern=cfg.input_fname_pattern,
             crop=cfg.crop)
 
-        model.build(cfg['build_func'])
+        model.build(cfg.build_func)
 
         show_all_variables()
 
         if cfg.train:
-            train_func = eval("model." + (cfg['train_func']))
+            train_func = eval("model." + cfg.train_func)
             train_func()
         else:
             if not model.load(LOGDIR)[0]:
