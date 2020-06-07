@@ -22,7 +22,7 @@ else:
 
 IMAGE_PATH = cfg.image_path
 OUTPUT_DIR = cfg.output_dir
-LOGDIR = cfg.checkpoint_dir
+LOGDIR = cfg.log_dir
 
 from tools.ops import *
 from tools.utils import get_image, merge, inverse_transform, to_bool
@@ -50,7 +50,7 @@ for angle in np.linspace(cfg.azi_low, cfg.azi_high, GRID_X)]), [GRID_Y, 1])
 SAMPLE_VIEW = SAMPLE_VIEW.reshape((GRID_Y, GRID_X, -1)).transpose((1, 0, 2)).reshape((GRID_X * GRID_Y, -1))
 assert SAMPLE_VIEW.shape == (GRID_X * GRID_Y, 6)
 
-ADD_EMBEDDING = False
+ADD_EMBEDDING = True
 if ADD_EMBEDDING:
     cfg.z_dim += cfg.emb_dim
 
@@ -210,16 +210,16 @@ class HoloGAN(object):
         self.d_vars = [var for var in t_vars if 'd_' in var.name]
         self.g_vars = [var for var in t_vars if 'g_' in var.name]
 
-        self.saver = tf.train.Saver()
+        self.saver = tf.train_on_loader.Saver()
 
     def train_HoloGAN(self):
         self.d_lr_in = tf.placeholder(tf.float32, None, name='d_eta')
         self.g_lr_in = tf.placeholder(tf.float32, None, name='d_eta')
 
-        d_optim = tf.train.AdamOptimizer(cfg.d_eta, beta1=cfg.beta1, beta2=cfg.beta2).minimize(self.d_loss,
-                                                                                                        var_list=self.d_vars)
-        g_optim = tf.train.AdamOptimizer(cfg.g_eta, beta1=cfg.beta1, beta2=cfg.beta2).minimize(self.g_loss,
-                                                                                                        var_list=self.g_vars)
+        d_optim = tf.train_on_loader.AdamOptimizer(cfg.d_eta, beta1=cfg.beta1, beta2=cfg.beta2).minimize(self.d_loss,
+                                                                                                         var_list=self.d_vars)
+        g_optim = tf.train_on_loader.AdamOptimizer(cfg.g_eta, beta1=cfg.beta1, beta2=cfg.beta2).minimize(self.g_loss,
+                                                                                                         var_list=self.g_vars)
 
         tf.global_variables_initializer().run()
 
@@ -358,7 +358,7 @@ class HoloGAN(object):
                          time.time() - start_time, errD_fake + errD_real, errG, errQ, errE))
 
                 if np.mod(counter, cfg.refresh_rate) == 1:
-                    assert 'log' in LOGDIR
+                    assert 'log' in str(LOGDIR)
                     shutil.rmtree(LOGDIR, ignore_errors=True)
                     shutil.copyfile(sys.argv[1], os.path.join(LOGDIR, 'config.py'))
                     self.save(LOGDIR, counter)
@@ -701,7 +701,7 @@ class HoloGAN(object):
         print(" [*] Reading checkpoints...")
         checkpoint_dir = os.path.join(checkpoint_dir, self.model_dir)
 
-        ckpt = tf.train.get_checkpoint_state(checkpoint_dir)
+        ckpt = tf.train_on_loader.get_checkpoint_state(checkpoint_dir)
         if ckpt and ckpt.model_checkpoint_path:
             ckpt_name = os.path.basename(ckpt.model_checkpoint_path)
             self.saver.restore(self.sess, os.path.join(checkpoint_dir, ckpt_name))
